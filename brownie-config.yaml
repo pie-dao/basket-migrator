@@ -1,0 +1,16 @@
+dependencies:
+  - Openzeppelin/openzeppelin-contracts@4.4.2
+  - uniswap/v3-periphery@1.3.0
+  - uniswap/v2-periphery@1.0.0-beta.0
+autofetch_sources: true
+
+compiler:
+  solc:
+    version: 0.8.12
+    optimizer:
+      enabled: true
+      runs: 200
+    remappings:
+      - "@openzeppelin/contracts=Openzeppelin/openzeppelin-contracts@4.4.2/contracts"
+      - "@uniswap/periphery-contracts-v3=uniswap/v3-periphery@1.3.0/contracts"
+      - "@uniswap/periphery-contracts-v2=uniswap/v2-periphery@1.0.0-beta.0/contracts"

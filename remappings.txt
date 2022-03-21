@@ -1,0 +1,3 @@
+@uniswap/periphery-contracts-v3=/Users/antonio/.brownie/packages/uniswap/v3-periphery@1.3.0/contracts
+@uniswap/periphery-contracts-v2=/Users/antonio/.brownie/packages/uniswap/v2-periphery@1.0.0-beta.0/contracts
+@openzeppelin/contracts=/Users/antonio/.brownie/packages/OpenZeppelin/openzeppelin-contracts@4.4.2/contracts
