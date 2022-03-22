@@ -5,8 +5,9 @@ import {CERC20} from "../interfaces/CERC20.sol";
 import {IRecipe} from "../interfaces/IRecipe.sol";
 import {SushiBar} from "../interfaces/SushiBar.sol";
 import {VaultAPI} from "../interfaces/VaultAPI.sol";
-import {ISwapRouter} from "../interfaces/uniswap/ISwapRouter.sol";
+import {IBasketFacet} from "../interfaces/IBasketFacet.sol";
 import {IBasketLogic} from "../interfaces/IBasketLogic.sol";
+import {ISwapRouter} from "../interfaces/uniswap/ISwapRouter.sol";
 import {ICurvePool_2Token} from "../interfaces/ICurvePool_2Token.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -226,16 +227,16 @@ contract BasketMigrator {
     /// @notice Execute swaps.
     /// @param swaps A list of swaps (v2 or v3) encoded in structs.
     /// @param deadline A deadline for the swaps to happen.
-    function execSwaps(Swap[] calldata swaps, uint256 deadline) external {
+    function execSwaps(Swap[] calldata swaps, uint256 deadline) public {
         if (state != 1) revert NotBaking();
         if (msg.sender != gov) revert NotGovernance();
         if (deadline <= block.timestamp) revert DeadlineReached();
 
         for (uint256 i; i < swaps.length; ) {
             if (swaps[i].v3) {
-                _swapV3(swaps[i]);
+                _swapV3GivenIn(swaps[i]);
             } else {
-                _swapV2(swaps[i]);
+                _swapV2GivenIn(swaps[i]);
             }
 
             unchecked {
@@ -245,27 +246,48 @@ contract BasketMigrator {
     }
 
     /// @notice Bake it all.
-    /// @param minOut Minimum output units of DEFI++.
+    /// @param amountOut Amount to bake.
+    /// @param maxAmountIn Maximum amount of WETH to use.
     /// @param deadline A deadline for the bake to occour.
-    /// @param data Auxilary data for baking.
+    /// @param extraData Auxilary data for baking.
     function bake(
-        uint256 minOut,
+        uint256 amountOut,
+        uint256 maxAmountIn,
         uint256 deadline,
-        bytes calldata data
+        bytes calldata extraData
     ) external payable {
         if (state != 1) revert NotBaking();
         if (msg.sender != gov) revert NotGovernance();
         if (deadline <= block.timestamp) revert DeadlineReached();
 
-        uint256 inBalanceBefore = IERC20(WETH).balanceOf(address(this));
-        uint256 outBalanceBefore = IERC20(DPP).balanceOf(address(this));
+        if (msg.value != 0) {
+            // help the bake by sending some ETH
+            (bool succ, ) = WETH.call{value: msg.value}("");
+            if (!succ) revert();
+        }
 
-        IRecipe(recipe).bake(WETH, DPP, inBalanceBefore, data);
+        uint256 balanceIn = IERC20(WETH).balanceOf(address(this));
 
-        uint256 inBalanceAfter = IERC20(WETH).balanceOf(address(this));
-        uint256 outBalanceAfter = IERC20(DPP).balanceOf(address(this));
+        Swap[] memory swaps = getSwaps(amountOut, extraData);
+        for (uint256 i; i < swaps.length; ) {
+            if (swaps[i].v3) {
+                _swapV3GivenOut(swaps[i]);
+            } else {
+                _swapV3GivenOut(swaps[i]);
+            }
 
-        if (outBalanceAfter - outBalanceBefore < minOut) revert BakeFailed();
+            unchecked {
+                ++i;
+            }
+        }
+
+        uint256 usedIn = balanceIn - IERC20(WETH).balanceOf(address(this));
+
+        if (usedIn > maxAmountIn) revert BakeFailed();
+
+        balanceIn = IERC20(WETH).balanceOf(address(this));
+        uint256 refund = (balanceIn >= msg.value) ? msg.value : balanceIn;
+        IERC20(WETH).transfer(msg.sender, refund);
     }
 
     /// @notice Settle the migration and broadcast exchange rate.
@@ -282,7 +304,55 @@ contract BasketMigrator {
                             Internal
     ///////////////////////////////////////////////////////////////*/
 
-    function _swapV2(Swap calldata swap) internal {
+    function getSwaps(uint256 amountOut, bytes calldata extraData)
+        internal
+        returns (Swap[] memory swaps)
+    {
+        // Get tokens and amounts.
+        (address[] memory tokens, uint256[] memory amounts) = IBasketFacet(DPP)
+            .calcTokensForAmount(amountOut);
+
+        swaps = new Swap[](tokens.length);
+
+        // Decode extra data.
+        (
+            uint256[] memory indexesV2,
+            uint256[] memory indexesV3,
+            bytes[] memory swapsV2,
+            bytes[] memory swapsV3
+        ) = abi.decode(extraData, (uint256[], uint256[], bytes[], bytes[]));
+
+        uint256 last;
+        for (uint256 i; i < indexesV2.length; ) {
+            uint256 currIndex = indexesV2[i];
+
+            (address router, address[] memory path, uint256 amountInMax) = abi
+                .decode(swapsV2[i], (address, address[], uint256));
+
+            swaps[last++] = Swap({
+                v3: false,
+                data: abi.encode(router, path, amounts[currIndex], amountInMax)
+            });
+        }
+
+        for (uint256 i; i < indexesV3.length; ) {
+            (address router, bytes memory path, uint256 amountInMax) = abi
+                .decode(swapsV3[i], (address, bytes, uint256));
+
+            swaps[last++] = Swap({
+                v3: true,
+                data: abi.encode(
+                    router,
+                    path,
+                    amounts[indexesV3[i]],
+                    amountInMax,
+                    WETH
+                )
+            });
+        }
+    }
+
+    function _swapV2GivenIn(Swap memory swap) internal {
         // decode data
         (address router, address[] memory path, uint256 qty, uint256 min) = abi
             .decode(swap.data, (address, address[], uint256, uint256));
@@ -301,15 +371,38 @@ contract BasketMigrator {
         );
     }
 
-    function _swapV3(Swap calldata swap) internal {
+    function _swapV2GivenOut(Swap memory swap) internal {
+        // decode data
+        (
+            address router,
+            address[] memory path,
+            uint256 amountOut,
+            uint256 amountInMax
+        ) = abi.decode(swap.data, (address, address[], uint256, uint256));
+
+        IERC20 tokenIn = IERC20(path[0]);
+        if (tokenIn.allowance(address(this), router) <= amountInMax) {
+            tokenIn.approve(router, type(uint256).max);
+        }
+
+        IUniswapV2Router01(router).swapTokensForExactTokens(
+            amountOut,
+            amountInMax,
+            path,
+            address(this),
+            block.timestamp
+        );
+    }
+
+    function _swapV3GivenIn(Swap memory swap) internal {
         // decode data
         (
             address router,
             bytes memory path,
-            IERC20 tokenIn,
             uint256 qty,
-            uint256 min
-        ) = abi.decode(swap.data, (address, bytes, IERC20, uint256, uint256));
+            uint256 min,
+            IERC20 tokenIn
+        ) = abi.decode(swap.data, (address, bytes, uint256, uint256, IERC20));
 
         if (tokenIn.allowance(address(this), router) < qty) {
             tokenIn.approve(router, type(uint256).max);
@@ -323,6 +416,30 @@ contract BasketMigrator {
         params.amountOutMinimum = min;
 
         ISwapRouter(router).exactInput(params);
+    }
+
+    function _swapV3GivenOut(Swap memory swap) internal {
+        // decode data
+        (
+            address router,
+            bytes memory path,
+            uint256 amountOut,
+            uint256 amountInMax,
+            IERC20 tokenIn
+        ) = abi.decode(swap.data, (address, bytes, uint256, uint256, IERC20));
+
+        if (tokenIn.allowance(address(this), router) < amountInMax) {
+            tokenIn.approve(router, type(uint256).max);
+        }
+
+        ISwapRouter.ExactOutputParams memory params;
+        params.path = path;
+        params.recipient = address(this);
+        params.deadline = block.timestamp;
+        params.amountOut = amountOut;
+        params.amountInMaximum = amountInMax;
+
+        ISwapRouter(router).exactOutput(params);
     }
 
     /*///////////////////////////////////////////////////////////////
