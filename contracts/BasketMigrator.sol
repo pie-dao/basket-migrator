@@ -67,9 +67,6 @@ contract BasketMigrator {
     /// @notice Governance address for this contract.
     address public immutable gov;
 
-    /// @notice Recipe to use.
-    address public immutable recipe;
-
     /*///////////////////////////////////////////////////////////////
                     Structs declarations
     ///////////////////////////////////////////////////////////////*/
@@ -147,9 +144,8 @@ contract BasketMigrator {
                           Constructor
     ///////////////////////////////////////////////////////////////*/
 
-    constructor(address _gov, address _recipe) {
+    constructor(address _gov) {
         gov = _gov;
-        recipe = _recipe;
     }
 
     /*///////////////////////////////////////////////////////////////
@@ -333,6 +329,10 @@ contract BasketMigrator {
                 v3: false,
                 data: abi.encode(router, path, amounts[currIndex], amountInMax)
             });
+
+            unchecked {
+                ++i;
+            }
         }
 
         for (uint256 i; i < indexesV3.length; ) {
@@ -349,6 +349,10 @@ contract BasketMigrator {
                     WETH
                 )
             });
+
+            unchecked {
+                ++i;
+            }
         }
     }
 
