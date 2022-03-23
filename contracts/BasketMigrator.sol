@@ -223,7 +223,7 @@ contract BasketMigrator {
     /// @notice Execute swaps.
     /// @param swaps A list of swaps (v2 or v3) encoded in structs.
     /// @param deadline A deadline for the swaps to happen.
-    function execSwaps(Swap[] calldata swaps, uint256 deadline) public {
+    function execSwaps(Swap[] calldata swaps, uint256 deadline) external {
         if (state != 1) revert NotBaking();
         if (msg.sender != gov) revert NotGovernance();
         if (deadline <= block.timestamp) revert DeadlineReached();
@@ -293,7 +293,8 @@ contract BasketMigrator {
         if (finalRate) state = 2;
 
         uint256 total = totalDeposits - IERC20(BDI).balanceOf(address(this)); // account for dust
-        rate = (total * 1e18) / IERC20(DPP).balanceOf(address(this)); // compute rate
+        uint256 dppBalance = IERC20(DPP).balanceOf(address(this);
+        rate = (dppBalance * 1e18) / total; // compute rate
     }
 
     /*///////////////////////////////////////////////////////////////
@@ -320,14 +321,17 @@ contract BasketMigrator {
 
         uint256 last;
         for (uint256 i; i < indexesV2.length; ) {
-            uint256 currIndex = indexesV2[i];
-
             (address router, address[] memory path, uint256 amountInMax) = abi
                 .decode(swapsV2[i], (address, address[], uint256));
 
             swaps[last++] = Swap({
                 v3: false,
-                data: abi.encode(router, path, amounts[currIndex], amountInMax)
+                data: abi.encode(
+                    router,
+                    path,
+                    amounts[indexesV2[i]],
+                    amountInMax
+                )
             });
 
             unchecked {
