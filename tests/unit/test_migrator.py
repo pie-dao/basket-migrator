@@ -119,6 +119,8 @@ def test_can_exit_if_settled(BDI, DPP, gov, misc_accounts, migrator):
 
     migrator.exit({"from": alice})
 
+    assert DPP.balanceOf(alice) == 5e18
+
 
 # state changes
 

@@ -245,12 +245,14 @@ contract BasketMigrator {
     /// @param amountOut Amount to bake.
     /// @param maxAmountIn Maximum amount of WETH to use.
     /// @param deadline A deadline for the bake to occour.
-    /// @param extraData Auxilary data for baking.
+    /// @param approvals Indicates if approvals for underlyings should be done.
+    /// @param swaps Swaps from WETH to underlyings.
     function bake(
         uint256 amountOut,
         uint256 maxAmountIn,
         uint256 deadline,
-        bytes calldata extraData
+        bool approvals,
+        Swap[] calldata swaps
     ) external payable {
         if (state != 1) revert NotBaking();
         if (msg.sender != gov) revert NotGovernance();
@@ -264,26 +266,25 @@ contract BasketMigrator {
 
         uint256 balanceIn = IERC20(WETH).balanceOf(address(this));
 
-        Swap[] memory swaps = getSwaps(amountOut, extraData);
-        for (uint256 i; i < swaps.length; ) {
-            if (swaps[i].v3) {
-                _swapV3GivenOut(swaps[i]);
-            } else {
-                _swapV3GivenOut(swaps[i]);
-            }
+        // Execute swaps
+        _execSwapsGivenOut(swaps);
 
-            unchecked {
-                ++i;
-            }
-        }
+        // Execute approvals if needed
+        if (approvals) _execApprovalsForBasket();
 
+        // Join DEFI++
+        IBasketFacet(DPP).joinPool(amountOut);
+
+        // Check amount used is less than required
         uint256 usedIn = balanceIn - IERC20(WETH).balanceOf(address(this));
 
-        if (usedIn > maxAmountIn) revert BakeFailed();
+        if (usedIn >= maxAmountIn) revert BakeFailed();
 
-        balanceIn = IERC20(WETH).balanceOf(address(this));
-        uint256 refund = (balanceIn >= msg.value) ? msg.value : balanceIn;
-        IERC20(WETH).transfer(msg.sender, refund);
+        if (msg.value != 0) {
+            balanceIn = IERC20(WETH).balanceOf(address(this));
+            uint256 refund = (balanceIn >= msg.value) ? msg.value : balanceIn;
+            if (refund != 0) IERC20(WETH).transfer(msg.sender, refund);
+        }
     }
 
     /// @notice Settle the migration and broadcast exchange rate.
@@ -301,63 +302,25 @@ contract BasketMigrator {
                             Internal
     ///////////////////////////////////////////////////////////////*/
 
-    function getSwaps(uint256 amountOut, bytes calldata extraData)
-        internal
-        returns (Swap[] memory swaps)
-    {
-        // Get tokens and amounts.
-        (address[] memory tokens, uint256[] memory amounts) = IBasketFacet(DPP)
-            .calcTokensForAmount(amountOut);
-
-        swaps = new Swap[](tokens.length);
-
-        // Decode extra data.
-        (
-            uint256[] memory indexesV2,
-            uint256[] memory indexesV3,
-            bytes[] memory swapsV2,
-            bytes[] memory swapsV3
-        ) = abi.decode(extraData, (uint256[], uint256[], bytes[], bytes[]));
-
-        uint256 last;
-        for (uint256 i; i < indexesV2.length; ) {
-            (address router, address[] memory path, uint256 amountInMax) = abi
-                .decode(swapsV2[i], (address, address[], uint256));
-
-            swaps[last++] = Swap({
-                v3: false,
-                data: abi.encode(
-                    router,
-                    path,
-                    amounts[indexesV2[i]],
-                    amountInMax
-                )
-            });
+    function _execSwapsGivenOut(Swap[] calldata swaps) internal {
+        for (uint256 i; i < swaps.length; ) {
+            if (swaps[i].v3) {
+                _swapV3GivenOut(swaps[i]);
+            } else {
+                _swapV2GivenOut(swaps[i]);
+            }
 
             unchecked {
                 ++i;
             }
         }
+    }
 
-        for (uint256 i; i < indexesV3.length; ) {
-            (
-                address router,
-                address tokenOut,
-                uint24 fee,
-                uint256 amountInMax
-            ) = abi.decode(swapsV3[i], (address, address, uint24, uint256));
+    function _execApprovalsForBasket() internal {
+        address[] memory tokens = IBasketFacet(DPP).getTokens();
 
-            swaps[last++] = Swap({
-                v3: true,
-                data: abi.encode(
-                    router,
-                    WETH,
-                    tokenOut,
-                    fee,
-                    amounts[indexesV3[i]],
-                    amountInMax,
-                )
-            });
+        for (uint256 i = 0; i < tokens.length; ) {
+            IERC20(tokens[i]).approve(DPP, type(uint256).max);
 
             unchecked {
                 ++i;
@@ -367,17 +330,21 @@ contract BasketMigrator {
 
     function _swapV2GivenIn(Swap memory swap) internal {
         // decode data
-        (address router, address[] memory path, uint256 qty, uint256 min) = abi
-            .decode(swap.data, (address, address[], uint256, uint256));
+        (
+            address router,
+            address[] memory path,
+            uint256 amountOut,
+            uint256 amountInMin
+        ) = abi.decode(swap.data, (address, address[], uint256, uint256));
 
         IERC20 tokenIn = IERC20(path[0]);
-        if (tokenIn.allowance(address(this), router) <= qty) {
+        if (tokenIn.allowance(address(this), router) <= amountOut) {
             tokenIn.approve(router, type(uint256).max);
         }
 
         IUniswapV2Router01(router).swapExactTokensForTokens(
-            qty,
-            min,
+            amountOut,
+            amountInMin,
             path,
             address(this),
             block.timestamp
@@ -414,14 +381,14 @@ contract BasketMigrator {
             address tokenIn,
             address tokenOut,
             uint24 fee,
-            uint256 qty,
-            uint256 min
+            uint256 amountIn,
+            uint256 amountOutMin
         ) = abi.decode(
                 swap.data,
                 (address, address, address, uint24, uint256, uint256)
             );
 
-        if (IERC20(tokenIn).allowance(address(this), router) < qty) {
+        if (IERC20(tokenIn).allowance(address(this), router) <= amountIn) {
             IERC20(tokenIn).approve(router, type(uint256).max);
         }
 
@@ -431,8 +398,8 @@ contract BasketMigrator {
         params.fee = fee;
         params.recipient = address(this);
         params.deadline = block.timestamp;
-        params.amountIn = qty;
-        params.amountOutMinimum = min;
+        params.amountIn = amountIn;
+        params.amountOutMinimum = amountOutMin;
 
         ISwapRouter(router).exactInputSingle(params);
     }
@@ -451,7 +418,7 @@ contract BasketMigrator {
                 (address, address, address, uint24, uint256, uint256)
             );
 
-        if (IERC20(tokenIn).allowance(address(this), router) < amountInMax) {
+        if (IERC20(tokenIn).allowance(address(this), router) <= amountInMax) {
             IERC20(tokenIn).approve(router, type(uint256).max);
         }
 

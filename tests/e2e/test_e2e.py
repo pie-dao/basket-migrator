@@ -5,7 +5,6 @@ from brownie import chain, interface
 from brownie import Contract, ZERO_ADDRESS
 from brownie_tokens import MintableForkToken
 from eth_abi import encode_single
-from eth_abi.packed import encode_single_packed
 
 HALF_HOUR = 1800
 DEV_SAFE_ADDRESS = "0x6458A23B020f489651f2777Bd849ddEd34DfCcd2"
@@ -94,6 +93,11 @@ def dps_basket_facet():
 
 
 @pytest.fixture
+def weth_token():
+    yield interface.ERC20(WETH)
+
+
+@pytest.fixture
 def router_sushi():
     yield Contract.from_explorer("0xd9e1cE17f2641f24aE83637ab66a2cca9C378B9F")
 
@@ -146,14 +150,22 @@ def quote_univ2(router, token_in, token_out, amount_in):
         return 0
 
 
-def swap_univ2(router, token_in, token_out, amount_in, expected, account):
+def quote_univ2_given_out(router, token_in, token_out, amount_out):
+    router = interface.IUniswapV2Router01(router)
+    try:
+        return router.getAmountsIn(amount_out, [token_in, token_out])[0]
+    except:
+        return 2**256 - 1
+
+
+def swap_univ2(router, token_in, token_out, max_in, amount_out, account):
     router = interface.IUniswapV2Router01(router)
 
-    interface.ERC20(token_in).approve(router, amount_in, {"from": account})
+    interface.ERC20(token_in).approve(router, max_in, {"from": account})
 
-    router.swapExactTokensForTokens(
-        amount_in,
-        int(expected * 0.98),
+    router.swapTokensForExactTokens(
+        amount_out,
+        max_in,
         [token_in, token_out],
         account,
         chain.time() + HALF_HOUR,
@@ -178,18 +190,35 @@ def quote_univ3(factory, quoter, token_in, token_out, amount_in):
             return 0
 
 
-def swap_univ3(router, token_in, token_out, amount_in, expected, account):
+def quote_univ3_given_out(factory, quoter, token_in, token_out, amount_out):
+    factory = interface.IUniswapV3Factory(factory)
+    pool = factory.getPool(token_in, token_out, 3000)
+
+    if pool == ZERO_ADDRESS:
+        return 2**256 - 1
+    else:
+        try:
+            quoter = interface.IQuoter(quoter)
+            quote = quoter.quoteExactOutputSingle.call(
+                token_in, token_out, 3000, amount_out, 0
+            )
+            return quote
+        except:
+            return 2**256 - 1
+
+
+def swap_univ3(router, token_in, token_out, max_in, amount_out, account):
     router = interface.ISwapRouter(router)
-    interface.ERC20(token_in).approve(router, amount_in, {"from": account})
-    router.exactInputSingle(
+    interface.ERC20(token_in).approve(router, max_in, {"from": account})
+    router.exactOutputSingle(
         [
             token_in,
             token_out,
             3000,
             account,
             chain.time() + HALF_HOUR,
-            amount_in,
-            (expected * 0.98),
+            amount_out,
+            max_in,
             0,
         ],
         {"from": account},
@@ -256,13 +285,14 @@ def migration_dpp(
         "0x89Ab32156e46F46D02ade3FEcbe5Fc4243B9AAeD", {"from": DEV_SAFE_ADDRESS}
     )
 
+    dpp_basket_facet.setLock(chain.height, {"from": DEV_SAFE_ADDRESS})
+    dpp_basket_facet.setCap(100000000e18, {"from": DEV_SAFE_ADDRESS})
+
 
 def test_e2e(
     BDI,
     bdi_assets,
-    DPP,
-    DPL,
-    DPS,
+    weth_token,
     dpp_proxy,
     dpp_balancer_pool,
     dpp_caller_facet,
@@ -302,8 +332,6 @@ def test_e2e(
     # exec bdi swaps to eth
     swaps = []
     for t in bdi_assets:
-        print(t)
-
         token = interface.ERC20(t)
         bal = token.balanceOf(migrator)
         univ2_out = quote_univ2(router_univ2, t, WETH, bal)
@@ -350,4 +378,85 @@ def test_e2e(
 
     migrator.execSwaps(swaps, chain.time() + HALF_HOUR, {"from": gov})
 
-    assert interface.ERC20(WETH).balanceOf(migrator) > 0
+    assert weth_token.balanceOf(migrator) > 0
+
+    amount_out = 2000e18  # conservative amount
+    (tokens, amounts) = dpp_basket_facet.calcTokensForAmount(amount_out)
+
+    swaps = []
+    max_amount_in = 0
+    for (t, amt) in zip(tokens, amounts):
+        univ2_in = int(quote_univ2_given_out(router_univ2, WETH, t, amt) * 1.02)
+        sushi_in = int(quote_univ2_given_out(router_sushi, WETH, t, amt) * 1.02)
+        univ3_in = int(
+            quote_univ3_given_out(factory_univ3, quoter_univ3, WETH, t, amt) * 1.02
+        )
+
+        if univ2_in <= sushi_in and univ2_in <= univ3_in:
+            swaps.append(
+                (
+                    False,
+                    encode_single(
+                        "(address,address[],uint256,uint256)",
+                        [router_univ2.address, [WETH, t], amt, univ2_in],
+                    ),
+                )
+            )
+
+            max_amount_in += univ2_in
+        elif sushi_in <= univ2_in and sushi_in <= univ3_in:
+            swaps.append(
+                (
+                    False,
+                    encode_single(
+                        "(address,address[],uint256,uint256)",
+                        [router_sushi.address, [WETH, t], amt, sushi_in],
+                    ),
+                )
+            )
+
+            max_amount_in += sushi_in
+        else:
+            swaps.append(
+                (
+                    True,
+                    encode_single(
+                        "(address,address,address,uint24,uint256,uint256)",
+                        [router_univ3.address, WETH, t, 3000, amt, univ3_in],
+                    ),
+                )
+            )
+
+            max_amount_in += univ3_in
+
+    balance_weth_before = weth_token.balanceOf(migrator)
+
+    migrator.bake(
+        2000e18,
+        max_amount_in,
+        chain.time() + HALF_HOUR,
+        True,
+        swaps,
+        {"from": gov},
+    )
+
+    assert dpp_basket_facet.balanceOf(migrator) == 2000e18
+    assert balance_weth_before - weth_token.balanceOf(migrator) <= max_amount_in
+
+    migrator.settle(False, {"from": gov})
+
+    assert migrator.rate() == 1e18
+
+    # test with refund
+
+    migrator.bake(
+        2000e18,
+        max_amount_in,
+        chain.time() + HALF_HOUR,
+        True,
+        swaps,
+        {"from": gov, "value": 1e18},
+    )
+
+    assert weth_token.balanceOf(gov) == 1e18
+    assert dpp_basket_facet.balanceOf(migrator) == 4000e18
