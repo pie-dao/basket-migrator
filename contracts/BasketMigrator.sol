@@ -292,8 +292,8 @@ contract BasketMigrator {
         if (msg.sender != gov) revert NotGovernance();
         if (finalRate) state = 2;
 
+        uint256 dppBalance = IERC20(DPP).balanceOf(address(this)); // DEFI++ balance
         uint256 total = totalDeposits - IERC20(BDI).balanceOf(address(this)); // account for dust
-        uint256 dppBalance = IERC20(DPP).balanceOf(address(this);
         rate = (dppBalance * 1e18) / total; // compute rate
     }
 
@@ -340,17 +340,22 @@ contract BasketMigrator {
         }
 
         for (uint256 i; i < indexesV3.length; ) {
-            (address router, bytes memory path, uint256 amountInMax) = abi
-                .decode(swapsV3[i], (address, bytes, uint256));
+            (
+                address router,
+                address tokenOut,
+                uint24 fee,
+                uint256 amountInMax
+            ) = abi.decode(swapsV3[i], (address, address, uint24, uint256));
 
             swaps[last++] = Swap({
                 v3: true,
                 data: abi.encode(
                     router,
-                    path,
+                    WETH,
+                    tokenOut,
+                    fee,
                     amounts[indexesV3[i]],
                     amountInMax,
-                    WETH
                 )
             });
 
@@ -406,48 +411,60 @@ contract BasketMigrator {
         // decode data
         (
             address router,
-            bytes memory path,
+            address tokenIn,
+            address tokenOut,
+            uint24 fee,
             uint256 qty,
-            uint256 min,
-            IERC20 tokenIn
-        ) = abi.decode(swap.data, (address, bytes, uint256, uint256, IERC20));
+            uint256 min
+        ) = abi.decode(
+                swap.data,
+                (address, address, address, uint24, uint256, uint256)
+            );
 
-        if (tokenIn.allowance(address(this), router) < qty) {
-            tokenIn.approve(router, type(uint256).max);
+        if (IERC20(tokenIn).allowance(address(this), router) < qty) {
+            IERC20(tokenIn).approve(router, type(uint256).max);
         }
 
-        ISwapRouter.ExactInputParams memory params;
-        params.path = path;
+        ISwapRouter.ExactInputSingleParams memory params;
+        params.tokenIn = tokenIn;
+        params.tokenOut = tokenOut;
+        params.fee = fee;
         params.recipient = address(this);
         params.deadline = block.timestamp;
         params.amountIn = qty;
         params.amountOutMinimum = min;
 
-        ISwapRouter(router).exactInput(params);
+        ISwapRouter(router).exactInputSingle(params);
     }
 
     function _swapV3GivenOut(Swap memory swap) internal {
         // decode data
         (
             address router,
-            bytes memory path,
+            address tokenIn,
+            address tokenOut,
+            uint24 fee,
             uint256 amountOut,
-            uint256 amountInMax,
-            IERC20 tokenIn
-        ) = abi.decode(swap.data, (address, bytes, uint256, uint256, IERC20));
+            uint256 amountInMax
+        ) = abi.decode(
+                swap.data,
+                (address, address, address, uint24, uint256, uint256)
+            );
 
-        if (tokenIn.allowance(address(this), router) < amountInMax) {
-            tokenIn.approve(router, type(uint256).max);
+        if (IERC20(tokenIn).allowance(address(this), router) < amountInMax) {
+            IERC20(tokenIn).approve(router, type(uint256).max);
         }
 
-        ISwapRouter.ExactOutputParams memory params;
-        params.path = path;
+        ISwapRouter.ExactOutputSingleParams memory params;
+        params.tokenIn = tokenIn;
+        params.tokenOut = tokenOut;
+        params.fee = fee;
         params.recipient = address(this);
         params.deadline = block.timestamp;
         params.amountOut = amountOut;
         params.amountInMaximum = amountInMax;
 
-        ISwapRouter(router).exactOutput(params);
+        ISwapRouter(router).exactOutputSingle(params);
     }
 
     /*///////////////////////////////////////////////////////////////

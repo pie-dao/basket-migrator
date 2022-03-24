@@ -112,6 +112,8 @@ def test_can_exit_if_settled(BDI, DPP, gov, misc_accounts, migrator):
 
     migrator.closeEntry({"from": gov})
 
+    migrator.burnAndUnwrap({"from": gov})
+
     DPP._mint_for_testing(migrator, 5e18)
     migrator.settle(True, {"from": gov})
 
@@ -154,6 +156,8 @@ def test_settle_not_final_doesnt_change_state(DPP, BDI, misc_accounts, gov, migr
 
     migrator.closeEntry({"from": gov})
 
+    migrator.burnAndUnwrap({"from": gov})
+
     assert migrator.state() == 1
 
     DPP._mint_for_testing(migrator, 5e18)
@@ -170,6 +174,7 @@ def test_settle_final_changes_state(DPP, BDI, misc_accounts, gov, migrator):
     migrator.enter(5e18, {"from": alice})
 
     migrator.closeEntry({"from": gov})
+    migrator.burnAndUnwrap({"from": gov})
 
     assert migrator.state() == 1
 
