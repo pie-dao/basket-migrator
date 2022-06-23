@@ -18,6 +18,10 @@ ROUTER_UNIV3 = "0xE592427A0AEce92De3Edee1F18E0157C05861564"
 QUOTER_UNIV3 = "0xb27308f9F90D607463bb33eA1BeBb41C27CE5AB6"
 FACTORY_UNIV3 = "0x1F98431c8aD98523631AE4a59f267346ea31F984"
 
+"""
+Fetches a quote from the Uniswap V2 application
+"""
+
 
 def quote_univ2(router, token_in, token_out, amount_in):
     router = interface.IUniswapV2Router01(router)
@@ -103,6 +107,7 @@ def swap_univ3(router, token_in, token_out, max_in, amount_out, account):
 
 
 def main():
+    # Initalise contracts
     safe = ApeSafe(DEV_SAFE_ADDRESS)
     migrator = BasketMigrator(MIGRATOR)
     dpp_basket = interface.IBasketFacet(DPP_ADDR)
@@ -112,10 +117,13 @@ def main():
     quoter_univ3 = Contract.from_explorer(QUOTER_UNIV3)
     factory_univ3 = Contract.from_explorer(FACTORY_UNIV3)
 
+    # extract the tokens and qtys needed for AMOUNT_OUT of defi++
     (tokens, amounts) = dpp_basket.calcTokensForAmount(AMOUNT_OUT)
 
     swaps = []
     max_amount_in = 0
+
+    # fetch quotes from univ2,3 and sushi with 2% slippage
     for (t, amt) in zip(tokens, amounts):
         univ2_in = int(quote_univ2_given_out(router_univ2, WETH, t, amt) * 1.02)
         sushi_in = int(quote_univ2_given_out(router_sushi, WETH, t, amt) * 1.02)
@@ -123,6 +131,7 @@ def main():
             quote_univ3_given_out(factory_univ3, quoter_univ3, WETH, t, amt) * 1.02
         )
 
+        # cycle through the quotes to find the best price
         if univ2_in <= sushi_in and univ2_in <= univ3_in:
             swaps.append(
                 (
@@ -165,8 +174,13 @@ def main():
 
     print(f"balance WETH before: {balance_weth_before / 1e18}")
 
+    # @param amountOut Amount to bake.
+    # @param maxAmountIn Maximum amount of WETH to use.
+    # @param deadline A deadline for the bake to occour.
+    # @param approvals Indicates if approvals for underlyings should be done.
+    # @param swaps Swaps from WETH to underlyings.
     migrator.bake(
-        2000e18,
+        2000e18,  # is this the correct hardcoding?
         max_amount_in,
         chain.time() + HALF_HOUR,
         True,
@@ -177,6 +191,7 @@ def main():
     print(f"DEFI++ balance: {dpp_basket.balanceOf(MIGRATOR)}")
     print(f"balance WETH after: {weth_erc20.balanceOf(MIGRATOR)}")
 
+    # Ape safe transactions
     safe_tx = safe.multisend_from_receipts()
     safe.preview(safe_tx)
     safe.sign_with_frame(safe_tx)

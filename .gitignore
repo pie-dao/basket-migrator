@@ -4,4 +4,6 @@ __pycache__
 .hypothesis/
 build/
 reports/
-.pytest_cache
+.pytest_cachevenv/
+venv
+venv/bin venv/include venv/lib venv/lib64 venv/pyvenv.cfg venv/vyper_git_commithash.txt
