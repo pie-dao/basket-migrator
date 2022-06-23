@@ -46,6 +46,6 @@ You cannot rewind state
 
 ### Questions:
 - What is the purpose of the deadline in external functions? 
-- The receive function has yet to be implemented
+- The bake script needs AMOUNT_OUT to be set
 
 ### Potential Improvements:
