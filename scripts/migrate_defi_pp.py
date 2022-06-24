@@ -1,3 +1,7 @@
+"""
+This appears to be unrelated to BDI and is a script for the DEFI+S/L -> DEFI++ Merge that happened previously
+"""
+
 from ape_safe import ApeSafe
 from brownie import chain, interface
 from brownie import Contract, ZERO_ADDRESS
@@ -25,10 +29,10 @@ def unlend_assets_defi_pl(safe):
     ]
 
     for asset in lended_assets:
-        asset_erc20 = interface.ERC20(asset)
         dpl_lending_manager.unlend(asset, 2**256 - 1, {"from": safe.account})
 
 
+# convert defi++ to ExperiPie
 def experinate_defi_pp(safe):
     dpp_proxy = interface.IProxy(DPP_ADDR)
     experinator = Contract.from_explorer(EXPERINATOR)
