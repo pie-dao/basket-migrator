@@ -100,6 +100,7 @@ def swap_univ3(router, token_in, token_out, max_in, amount_out, account):
 
 
 def main():
+    # Init the contracts
     safe = ApeSafe(DEV_SAFE_ADDRESS)
     migrator = BasketMigrator(MIGRATOR)
     router_univ2 = Contract.from_explorer(ROUTER_UNIV2)
@@ -131,10 +132,13 @@ def main():
     for t in bdi_assets:
         token = interface.ERC20(t)
         bal = token.balanceOf(migrator)
+
+        # Fetch quotes to convert each token to WETH, for a given balance
         univ2_out = quote_univ2(router_univ2, t, WETH, bal)
         sushi_out = quote_univ2(router_sushi, t, WETH, bal)
         univ3_out = quote_univ3(factory_univ3, quoter_univ3, t, WETH, bal)
 
+        # Get best rate (highest price)
         if univ2_out >= sushi_out and univ2_out >= univ3_out:
             swaps.append(
                 (
@@ -173,6 +177,7 @@ def main():
                 )
             )
 
+    # Execute the batch of swaps within half an hour
     migrator.execSwaps(swaps, chain.time() + HALF_HOUR, {"from": safe})
 
     weth_erc20 = interface.ERC20(WETH)
